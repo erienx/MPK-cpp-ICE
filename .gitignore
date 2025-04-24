@@ -1,0 +1,14 @@
+*.o
+*.out
+*.exe
+build/
+bin/
+*.log
+
+.DS_Store
+Thumbs.db
+CMakeLists.txt
+SIP.h
+SIP.cpp
+cmake-build-debug/
+cmake-build-debug
