@@ -216,6 +216,18 @@ int main(int argc, char* argv[]) {
         lineAdapter->activate();
         stopAdapter->activate();
 
+        MPKImpl* mpkImpl = dynamic_cast<MPKImpl*>(mpkObj.get());
+        if(mpkImpl) {
+            TramStopPrx tsProxy = TramStopPrx::uncheckedCast(ic->stringToProxy("StopCentral:default -p 10007"));
+            mpkImpl->addTramStop(tsProxy);
+            LinePrx lineProxy = LinePrx::uncheckedCast(ic->stringToProxy("LineLine1:default -p 10004"));
+            mpkImpl->addLine(lineProxy);
+            DepoPrx depoProxy = DepoPrx::uncheckedCast(ic->stringToProxy("DepoCentral:default -p 10003"));
+            mpkImpl->registerDepo(depoProxy);
+        }
+
+        cout << "system working " << endl;
+
         ic->waitForShutdown();
 
     } catch (const exception& e) {

@@ -37,6 +37,39 @@ int main(int argc, char* argv[]) {
         adapter->activate();
         cout << "client is on.." << endl;
 
+
+        Ice::ObjectPrx base = ic->stringToProxy("MPK:default -p 10000");
+        MPKPrx mpk = MPKPrx::checkedCast(base);
+        if(!mpk) {
+            cerr << "incorrect mpk proxy" << endl;
+        } else {
+
+            DepoList depoList = mpk->getDepos();
+            cout << "depo list:" << endl;
+            for(const auto &dInfo : depoList) {
+                cout << "**depo: " << dInfo.name << endl;
+            }
+
+            try {
+                TramStopPrx ts = mpk->getTramStop("StopCentral");
+                cout << "found stop: " << ts->getName() << endl;
+            } catch (const exception &ex) {
+                cout << "couldnt get tram stop, msg: : " << ex.what() << endl;
+            }
+
+            LineList lines = mpk->getLines();
+            cout << "lines count: " << lines.size() << endl;
+            for(const auto &line : lines) {
+                cout << "**line: " << line->getName() << endl;
+                TramList tramList = line->getTrams();
+                cout << "tram list: " << tramList.size() << endl;
+                for(const auto &tramInfo : tramList) {
+                    cout << " **tram: " << tramInfo.tram->getStockNumber() << " time: "
+                         << tramInfo.time.hour << ":" << tramInfo.time.minute << endl;
+                }
+            }
+        }
+
         ic->waitForShutdown();
 
     } catch (const exception& e) {

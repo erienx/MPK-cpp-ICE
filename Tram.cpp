@@ -71,6 +71,24 @@ int main(int argc, char* argv[]) {
 
         adapter->activate();
         cout << "tram wiht number" << argv[1] << " started" << endl;
+
+        TramPrx tramProxy = TramPrx::uncheckedCast(ic->stringToProxy("Tram" + string(argv[1]) + ":default -p 10001"));
+        LinePrx lineProxy = LinePrx::uncheckedCast(ic->stringToProxy("LineLine1:default -p 10004"));
+        try {
+            lineProxy->registerTram(tramProxy);
+            cout << "registered on line" << endl;
+        } catch(const exception &e) {
+            cerr << "err line register: " << e.what() << endl;
+        }
+        DepoPrx depoProxy = DepoPrx::uncheckedCast(ic->stringToProxy("DepoCentral:default -p 10003"));
+        try {
+            depoProxy->TramOnline(tramProxy);
+            cout << "online in depo" << endl;
+        } catch(const exception &e) {
+            cerr << "err in depo " << e.what() << endl;
+        }
+
+
         ic->waitForShutdown();
 
     } catch (const exception& e) {
