@@ -11,6 +11,7 @@ class DepoI;
 class LineI;
 class MPKImpl;
 
+
 class MPKImpl : public MPK {
     map<string, TramStopPrx> tramStops;
     map<string, DepoPrx> depos;
@@ -68,7 +69,123 @@ public:
     virtual void unregisterStopFactory(const StopFactoryPrx &sf, const Ice::Current& = Ice::Current()) override {
         stopFactories.erase(remove(stopFactories.begin(), stopFactories.end(), sf), stopFactories.end());
     }
+
+
+    void addTramStop(const TramStopPrx &ts) {
+        tramStops[ts->getName()] = ts;
+    }
+    void addLine(const LinePrx &lineProxy) {
+        lines.push_back(lineProxy);
+    }
 };
+Ice::ObjectPtr createMPKImpl() {
+    return new MPKImpl();
+}
+
+class DepoImpl : public Depo {
+    string name;
+    set<TramPrx> onlineTrams;
+public:
+    DepoImpl(const string &n) : name(n) {}
+    virtual void TramOnline(const TramPrx &t, const Ice::Current& = Ice::Current()) override {
+        onlineTrams.insert(t);
+        cout << "tram " << t->getStockNumber() << " is online at " << name << "depo" <<  endl;
+    }
+    virtual void TramOffline(const TramPrx &t, const Ice::Current& = Ice::Current()) override {
+        onlineTrams.erase(t);
+        cout << "tram " << t->getStockNumber() << " is offline at " << name << "depo" << endl;
+    }
+    virtual string getName(const Ice::Current& = Ice::Current()) override {
+        return name;
+    }
+};
+
+Ice::ObjectPtr createDepoImpl(const string &name) {
+    return new DepoImpl(name);
+}
+
+
+class LineImpl : public Line {
+    string name;
+    TramList trams;
+    StopList stops;
+public:
+    LineImpl(const string &n) : name(n) {}
+    virtual TramList getTrams(const Ice::Current& = Ice::Current()) override {
+        return trams;
+    }
+    virtual StopList getStops(const Ice::Current& = Ice::Current()) override {
+        return stops;
+    }
+    virtual void registerTram(const TramPrx &tram, const Ice::Current& = Ice::Current()) override {
+        TramInfo info;
+        info.time.hour = 0;
+        info.time.minute = 0;
+        info.tram = tram;
+        trams.push_back(info);
+        cout << "registered tram " << tram->getStockNumber() << " on line " << name << endl;
+    }
+    virtual void unregisterTram(const TramPrx &tram, const Ice::Current& = Ice::Current()) override {
+        auto it = remove_if(trams.begin(), trams.end(), [tram](const TramInfo &info) {
+            return info.tram == tram;
+        });
+        trams.erase(it, trams.end());
+        cout << "unregistered tram " << tram->getStockNumber() << " from line " << name << endl;
+    }
+    virtual void setStops(const StopList &sl, const Ice::Current& = Ice::Current()) override {
+        stops = sl;
+        cout << "added stops for line  " << name << endl;
+    }
+    virtual string getName(const Ice::Current& = Ice::Current()) override {
+        return name;
+    }
+};
+
+Ice::ObjectPtr createLineImpl(const string &name) {
+    return new LineImpl(name);
+}
+
+class TramStopImpl : public TramStop {
+    string name;
+    set<PassengerPrx> passengers;
+    TramList upcomingTrams;
+public:
+    TramStopImpl(const string &n) : name(n) {}
+    virtual string getName(const Ice::Current& = Ice::Current()) override {
+        return name;
+    }
+    virtual TramList getNextTrams(int howMany, const Ice::Current& = Ice::Current()) override {
+        TramList result;
+        int count = 0;
+        for(const auto &ti : upcomingTrams) {
+            if(count >= howMany)
+                break;
+            result.push_back(ti);
+            count++;
+        }
+        return result;
+    }
+    virtual void RegisterPassenger(const PassengerPrx &p, const Ice::Current& = Ice::Current()) override {
+        passengers.insert(p);
+        cout << "passenger registered at stop " << name << endl;
+    }
+    virtual void UnregisterPassenger(const PassengerPrx &p, const Ice::Current& = Ice::Current()) override {
+        passengers.erase(p);
+        cout << "passenger unregistered at stop " << name << endl;
+    }
+    virtual void UpdateTramInfo(const TramPrx &tram, const Time& time, const Ice::Current& = Ice::Current()) override {
+        TramInfo info;
+        info.time = time;
+        info.tram = tram;
+        upcomingTrams.push_back(info);
+        cout << "tram info updated at stop " << name << " for tram " << tram->getStockNumber() << endl;
+    }
+};
+
+Ice::ObjectPtr createTramStopImpl(const string &name) {
+    return new TramStopImpl(name);
+}
+
 
 int main(int argc, char* argv[]) {
     int status = 0;
@@ -77,12 +194,28 @@ int main(int argc, char* argv[]) {
     try {
         ic = Ice::initialize(argc, argv);
 
-        Ice::ObjectAdapterPtr adapter = ic->createObjectAdapterWithEndpoints("SystemAdapter", "default -p 10000");
+        Ice::ObjectAdapterPtr mpkAdapter = ic->createObjectAdapterWithEndpoints("MPKAdapter", "default -p 10000");
+        Ice::ObjectAdapterPtr depoAdapter = ic->createObjectAdapterWithEndpoints("DepoAdapter", "default -p 10003");
+        Ice::ObjectAdapterPtr lineAdapter = ic->createObjectAdapterWithEndpoints("LineAdapter", "default -p 10004");
+        Ice::ObjectAdapterPtr stopAdapter = ic->createObjectAdapterWithEndpoints("StopAdapter", "default -p 10007");
 
-        Ice::ObjectPtr mpkObject = new MPKImpl();
-        adapter->add(mpkObject, Ice::stringToIdentity("MPK"));
+        Ice::ObjectPtr mpkObj = createMPKImpl();
+        mpkAdapter->add(mpkObj, Ice::stringToIdentity("MPK"));
 
-        adapter->activate();
+        Ice::ObjectPtr depoObj = createDepoImpl("CentralDepo");
+        depoAdapter->add(depoObj, Ice::stringToIdentity("DepoCentral"));
+
+        Ice::ObjectPtr lineObj = createLineImpl("Line1");
+        lineAdapter->add(lineObj, Ice::stringToIdentity("LineLine1"));
+
+        Ice::ObjectPtr stopObj = createTramStopImpl("StopCentral");
+        stopAdapter->add(stopObj, Ice::stringToIdentity("StopCentral"));
+
+        mpkAdapter->activate();
+        depoAdapter->activate();
+        lineAdapter->activate();
+        stopAdapter->activate();
+
         ic->waitForShutdown();
 
     } catch (const exception& e) {
