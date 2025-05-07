@@ -11,7 +11,6 @@
 using namespace std;
 using namespace SIP;
 
-// Global flags
 bool running = true;
 mutex mtx;
 map<string, TramPrx> watchedTrams;
@@ -20,32 +19,30 @@ map<string, Time> lastUpdatedTime;
 
 class PassengerImpl : public Passenger {
 public:
+    PassengerImpl(const string& clientId) : clientId(clientId) {}
+
     virtual void updateTramInfo(const TramPrx& tram, const StopList& stops, const Ice::Current& = Ice::Current()) override {
         lock_guard<mutex> lock(mtx);
 
         string stockNumber = tram->getStockNumber();
         Time currentTime;
 
-        // Get current time
         auto now = chrono::system_clock::now();
         time_t currentTimeT = chrono::system_clock::to_time_t(now);
         tm* timeinfo = localtime(&currentTimeT);
         currentTime.hour = timeinfo->tm_hour;
         currentTime.minute = timeinfo->tm_min;
 
-        // Store update time
         lastUpdatedTime[stockNumber] = currentTime;
 
-        cout << "\n[NOTIFICATION] Update for tram " << stockNumber << " at "
-             << currentTime.hour << ":" << (currentTime.minute < 10 ? "0" : "") << currentTime.minute << endl;
+        cout << "\n[NOTIFICATION] update for tram " << stockNumber << " at "<< currentTime.hour << ":" << currentTime.minute << endl;
 
         if (stops.empty()) {
-            cout << "  No upcoming stops for this tram." << endl;
+            cout << "no upcoming stops" << endl;
         } else {
-            cout << "  Upcoming stops:" << endl;
+            cout << "upcoming stops" << endl;
             for (const auto& stop : stops) {
-                cout << "  - " << stop.stop->getName() << " at "
-                     << stop.time.hour << ":" << (stop.time.minute < 10 ? "0" : "") << stop.time.minute << endl;
+                cout << "  - " << stop.stop->getName() << " at "<< stop.time.hour << ":"  << stop.time.minute << endl;
             }
         }
         cout << "Enter command: ";
@@ -56,85 +53,95 @@ public:
         lock_guard<mutex> lock(mtx);
 
         Time currentTime;
-        // Get current time
         auto now = chrono::system_clock::now();
         time_t currentTimeT = chrono::system_clock::to_time_t(now);
         tm* timeinfo = localtime(&currentTimeT);
         currentTime.hour = timeinfo->tm_hour;
         currentTime.minute = timeinfo->tm_min;
 
-        cout << "\n[NOTIFICATION] Update for stop " << stop->getName() << " at "
-             << currentTime.hour << ":" << (currentTime.minute < 10 ? "0" : "") << currentTime.minute << endl;
+        cout << "\n[NOTIFICATION] update for stop " << stop->getName() << " at "<< currentTime.hour << ":" << currentTime.minute << endl;
 
         if (trams.empty()) {
-            cout << "  No trams approaching this stop." << endl;
+            cout << "no trams inc" << endl;
         } else {
-            cout << "  Approaching trams:" << endl;
+            cout << "inc trams: " << endl;
             for (const auto& tram : trams) {
-                cout << "  - Tram " << tram.tram->getStockNumber() << " arriving at "
-                     << tram.time.hour << ":" << (tram.time.minute < 10 ? "0" : "") << tram.time.minute << endl;
+                cout << "  - Tram " << tram.tram->getStockNumber() << " arriving at "<< tram.time.hour << ":"  << tram.time.minute << endl;
             }
         }
         cout << "Enter command: ";
         cout.flush();
     }
+private:
+    string clientId;
+
 };
 
-void printHelp() {
-    cout << "\n==== MPK Passenger Client ====" << endl;
-    cout << "Available commands:" << endl;
-    cout << "  help                   - Show this help message" << endl;
-    cout << "  stops                  - List all available stops" << endl;
-    cout << "  register stop <name>   - Register at a stop to receive updates" << endl;
-    cout << "  unregister stop <name> - Unregister from a stop" << endl;
-    cout << "  lines                  - List all available lines" << endl;
-    cout << "  line <name>            - Show details for a specific line" << endl;
-    cout << "  trams <line>           - List trams on a specific line" << endl;
-    cout << "  watch tram <number>    - Register with a tram to get updates" << endl;
-    cout << "  unwatch tram <number>  - Unregister from a tram" << endl;
-    cout << "  status                 - Show registration status" << endl;
-    cout << "  exit                   - Exit the program" << endl;
-    cout << "=============================" << endl;
-}
+
 
 int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        cerr << "Usage: " << argv[0] << " <client_id>" << endl;
+        return 1;
+    }
+
+    string clientId = argv[1];
+    int clientNum;
+
+    try {
+        clientNum = stoi(clientId);
+        if (clientNum >= 1000 || clientNum < 0) {
+            cerr << "Invalid client ID (must be between 0 and 999)" << endl;
+            return 2;
+        }
+    } catch (const exception &ex) {
+        cerr << "Invalid client ID: " << ex.what() << endl;
+        return 2;
+    }
+
     int status = 0;
     Ice::CommunicatorPtr ic;
 
     try {
         ic = Ice::initialize(argc, argv);
 
-        // Create adapter for the client
-        Ice::ObjectAdapterPtr adapter = ic->createObjectAdapterWithEndpoints(
-                "ClientAdapter", "default -p 10002");
+        // Create unique port for this client
+        stringstream endpoint;
+        int port = 10000 + clientNum;
+        endpoint << "default -p " << port;
 
-        // Create and register passenger object
-        Ice::ObjectPtr passenger = new PassengerImpl();
-        adapter->add(passenger, Ice::stringToIdentity("Passenger1"));
+        Ice::ObjectAdapterPtr adapter = ic->createObjectAdapterWithEndpoints(
+                "ClientAdapter", endpoint.str());
+
+        Ice::ObjectPtr passenger = new PassengerImpl(clientId);
+        string passengerIdentity = "Passenger" + clientId;
+        adapter->add(passenger, Ice::stringToIdentity(passengerIdentity));
         adapter->activate();
 
-        // Get passenger proxy for registration
         PassengerPrx passengerPrx = PassengerPrx::uncheckedCast(
-                adapter->createProxy(Ice::stringToIdentity("Passenger1")));
+                adapter->createProxy(Ice::stringToIdentity(passengerIdentity)));
 
-        // Connect to MPK system
         MPKPrx mpk;
         try {
             Ice::ObjectPrx base = ic->stringToProxy("MPK:default -p 10000");
             mpk = MPKPrx::checkedCast(base);
             if (!mpk) {
-                cerr << "Error: Invalid MPK proxy" << endl;
+                cerr << "mpk proxy doesnt work" << endl;
                 return 1;
             }
-            cout << "Connected to MPK information system" << endl;
+            cout << "Connected to mpk" << endl;
         }
         catch (const exception& ex) {
-            cerr << "Failed to connect to MPK system: " << ex.what() << endl;
+            cerr << "cant connect to mpk " << endl;
             return 1;
         }
 
-        // Command loop
-        printHelp();
+        cout << "commands:" << endl;
+        cout << "  register stop <name>   - register at stop for updates" << endl;
+        cout << "  unregister stop <name> - unregister from a stop" << endl;
+        cout << "  watch tram <number>    - register on a tram for updates" << endl;
+        cout << "  unwatch tram <number>  - unregister from a tram" << endl;
+        cout << "  exit                   - exit n" << endl;
         string command;
 
         while (running) {
@@ -148,76 +155,33 @@ int main(int argc, char* argv[]) {
             try {
                 if (cmd == "exit") {
                     running = false;
-                    cout << "Shutting down client..." << endl;
+                    cout << "closing.." << endl;
 
-                    // Unregister from all stops before exiting
                     for (const auto& stop : registeredStops) {
                         try {
                             stop.second->UnregisterPassenger(passengerPrx);
                             cout << "Unregistered from stop: " << stop.first << endl;
                         }
                         catch (...) {
-                            // Ignore errors during shutdown
                         }
                     }
 
-                    // Unregister from all trams before exiting
                     for (const auto& tram : watchedTrams) {
                         try {
                             tram.second->UnregisterPassenger(passengerPrx);
                             cout << "Unregistered from tram: " << tram.first << endl;
                         }
                         catch (...) {
-                            // Ignore errors during shutdown
                         }
                     }
                 }
-                else if (cmd == "help") {
-                    printHelp();
-                }
-                else if (cmd == "stops") {
-                    cout << "\n==== Available Tram Stops ====" << endl;
-                    try {
-                        // Hard-coded for now, since MPK interface doesn't provide a method to list all stops
-                        // In a real application, this would be dynamic
-                        vector<string> stopNames = {"StopA", "StopB", "StopC"};
 
-                        for (const auto& name : stopNames) {
-                            try {
-                                TramStopPrx stop = mpk->getTramStop(name);
-                                cout << "- " << name;
-
-                                // Check if registered
-                                if (registeredStops.find(name) != registeredStops.end()) {
-                                    cout << " (Registered)";
-                                }
-
-                                // Get next trams
-                                TramList nextTrams = stop->getNextTrams(3);
-                                if (!nextTrams.empty()) {
-                                    cout << " - Next tram: " << nextTrams[0].tram->getStockNumber()
-                                         << " at " << nextTrams[0].time.hour << ":"
-                                         << (nextTrams[0].time.minute < 10 ? "0" : "") << nextTrams[0].time.minute;
-                                }
-                                cout << endl;
-                            }
-                            catch (...) {
-                                cout << "- " << name << " (Unavailable)" << endl;
-                            }
-                        }
-                    }
-                    catch (const exception& ex) {
-                        cout << "Error retrieving stops: " << ex.what() << endl;
-                    }
-                    cout << "=============================" << endl;
-                }
                 else if (cmd == "register") {
                     iss >> subcmd >> name;
                     if (subcmd == "stop" && !name.empty()) {
                         try {
-                            // Check if already registered
                             if (registeredStops.find(name) != registeredStops.end()) {
-                                cout << "Already registered at stop: " << name << endl;
+                                cout << "already registered on stop "<< endl;
                                 continue;
                             }
 
@@ -225,26 +189,24 @@ int main(int argc, char* argv[]) {
                             stop->RegisterPassenger(passengerPrx);
                             registeredStops[name] = stop;
 
-                            cout << "Successfully registered at stop: " << name << endl;
+                            cout << "registered at stop"<< endl;
 
-                            // Show upcoming trams as initial info
                             TramList trams = stop->getNextTrams(5);
                             if (trams.empty()) {
-                                cout << "No upcoming trams at this stop." << endl;
+                                cout << "no incoming trams" << endl;
                             } else {
-                                cout << "Upcoming trams:" << endl;
+                                cout << "incoming trams:" << endl;
                                 for (const auto& tram : trams) {
                                     cout << "- Tram " << tram.tram->getStockNumber() << " arriving at "
-                                         << tram.time.hour << ":"
-                                         << (tram.time.minute < 10 ? "0" : "") << tram.time.minute << endl;
+                                         << tram.time.hour << ":" << tram.time.minute << endl;
                                 }
                             }
                         }
                         catch (const exception& ex) {
-                            cout << "Error registering at stop: " << ex.what() << endl;
+                            cout << "register error : " <<endl;
                         }
                     } else {
-                        cout << "Usage: register stop <name>" << endl;
+                        cout << "provide stop name!" << endl;
                     }
                 }
                 else if (cmd == "unregister") {
@@ -255,159 +217,28 @@ int main(int argc, char* argv[]) {
                             if (it != registeredStops.end()) {
                                 it->second->UnregisterPassenger(passengerPrx);
                                 registeredStops.erase(it);
-                                cout << "Successfully unregistered from stop: " << name << endl;
+                                cout << "unregistered from stop " << endl;
                             } else {
-                                cout << "Not registered at stop: " << name << endl;
+                                cout << "not registered at stop " << endl;
                             }
                         }
                         catch (const exception& ex) {
-                            cout << "Error unregistering from stop: " << ex.what() << endl;
+                            cout << "err on unregister "<< endl;
                         }
                     } else {
-                        cout << "Usage: unregister stop <name>" << endl;
+                        cout << "provide stop name!" << endl;
                     }
                 }
-                else if (cmd == "lines") {
-                    cout << "\n==== Available Lines ====" << endl;
-                    try {
-                        LineList lines = mpk->getLines();
-                        if (lines.empty()) {
-                            cout << "No lines available." << endl;
-                        } else {
-                            for (const auto& line : lines) {
-                                cout << "- " << line->getName() << endl;
-                            }
-                        }
-                    }
-                    catch (const exception& ex) {
-                        cout << "Error retrieving lines: " << ex.what() << endl;
-                    }
-                    cout << "========================" << endl;
-                }
-                else if (cmd == "line") {
-                    iss >> name;
-                    if (!name.empty()) {
-                        try {
-                            LineList lines = mpk->getLines();
-                            LinePrx foundLine;
-                            bool found = false;
 
-                            for (const auto& line : lines) {
-                                if (line->getName() == name) {
-                                    foundLine = line;
-                                    found = true;
-                                    break;
-                                }
-                            }
-
-                            if (!found) {
-                                cout << "Line '" << name << "' not found." << endl;
-                                continue;
-                            }
-
-                            cout << "\n==== Line " << foundLine->getName() << " Information ====" << endl;
-
-                            // Get stops for this line
-                            StopList stops = foundLine->getStops();
-                            cout << "Stops (" << stops.size() << "):" << endl;
-                            for (const auto& stop : stops) {
-                                cout << "  - " << stop.stop->getName();
-                                cout << " (Arrival time: " << stop.time.hour << ":"
-                                     << (stop.time.minute < 10 ? "0" : "") << stop.time.minute << ")" << endl;
-                            }
-
-                            // Get trams for this line
-                            TramList trams = foundLine->getTrams();
-                            cout << "Trams (" << trams.size() << "):" << endl;
-                            if (trams.empty()) {
-                                cout << "  No trams currently on this line." << endl;
-                            } else {
-                                for (const auto& tram : trams) {
-                                    cout << "  - Stock Number: " << tram.tram->getStockNumber() << endl;
-                                }
-                            }
-
-                            cout << "=============================" << endl;
-                        }
-                        catch (const exception& ex) {
-                            cout << "Error retrieving line information: " << ex.what() << endl;
-                        }
-                    } else {
-                        cout << "Usage: line <name>" << endl;
-                    }
-                }
-                else if (cmd == "trams") {
-                    iss >> name;
-                    if (!name.empty()) {
-                        try {
-                            LineList lines = mpk->getLines();
-                            LinePrx foundLine;
-                            bool found = false;
-
-                            for (const auto& line : lines) {
-                                if (line->getName() == name) {
-                                    foundLine = line;
-                                    found = true;
-                                    break;
-                                }
-                            }
-
-                            if (!found) {
-                                cout << "Line '" << name << "' not found." << endl;
-                                continue;
-                            }
-
-                            cout << "\n==== Trams on Line " << foundLine->getName() << " ====" << endl;
-
-                            // Get trams for this line
-                            TramList trams = foundLine->getTrams();
-                            if (trams.empty()) {
-                                cout << "No trams currently on this line." << endl;
-                            } else {
-                                for (const auto& tram : trams) {
-                                    string stockNumber = tram.tram->getStockNumber();
-                                    cout << "- Tram " << stockNumber;
-
-                                    // Check if we're watching this tram
-                                    if (watchedTrams.find(stockNumber) != watchedTrams.end()) {
-                                        cout << " (Watching)";
-                                    }
-
-                                    // Get current location if available
-                                    try {
-                                        TramStopPrx location = tram.tram->getLocation();
-                                        if (location) {
-                                            cout << " - Current location: " << location->getName();
-                                        }
-                                    }
-                                    catch (...) {
-                                        // Ignore errors retrieving location
-                                    }
-
-                                    cout << endl;
-                                }
-                            }
-
-                            cout << "=============================" << endl;
-                        }
-                        catch (const exception& ex) {
-                            cout << "Error retrieving trams: " << ex.what() << endl;
-                        }
-                    } else {
-                        cout << "Usage: trams <line_name>" << endl;
-                    }
-                }
                 else if (cmd == "watch") {
                     iss >> subcmd >> name;
                     if (subcmd == "tram" && !name.empty()) {
                         try {
-                            // Check if already watching
                             if (watchedTrams.find(name) != watchedTrams.end()) {
-                                cout << "Already watching tram: " << name << endl;
+                                cout << "already watching tram: " << name << endl;
                                 continue;
                             }
 
-                            // Find the tram
                             bool found = false;
                             LineList lines = mpk->getLines();
 
@@ -419,20 +250,8 @@ int main(int argc, char* argv[]) {
                                         watchedTrams[name] = tram.tram;
                                         found = true;
 
-                                        cout << "Successfully registered with tram: " << name << endl;
+                                        cout << "registered on tram " << name << endl;
 
-                                        // Display immediate information
-                                        StopList nextStops = tram.tram->getNextStops(3);
-                                        if (nextStops.empty()) {
-                                            cout << "No upcoming stops for this tram." << endl;
-                                        } else {
-                                            cout << "Upcoming stops:" << endl;
-                                            for (const auto& stop : nextStops) {
-                                                cout << "- " << stop.stop->getName() << " at "
-                                                     << stop.time.hour << ":"
-                                                     << (stop.time.minute < 10 ? "0" : "") << stop.time.minute << endl;
-                                            }
-                                        }
 
                                         break;
                                     }
@@ -441,14 +260,14 @@ int main(int argc, char* argv[]) {
                             }
 
                             if (!found) {
-                                cout << "Tram with stock number '" << name << "' not found." << endl;
+                                cout << "tram not found" << endl;
                             }
                         }
                         catch (const exception& ex) {
-                            cout << "Error registering with tram: " << ex.what() << endl;
+                            cout << "Error registering on tram" << endl;
                         }
                     } else {
-                        cout << "Usage: watch tram <stock_number>" << endl;
+                        cout << "provide tram number!" << endl;
                     }
                 }
                 else if (cmd == "unwatch") {
@@ -459,62 +278,26 @@ int main(int argc, char* argv[]) {
                             if (it != watchedTrams.end()) {
                                 it->second->UnregisterPassenger(passengerPrx);
                                 watchedTrams.erase(it);
-                                cout << "Successfully unregistered from tram: " << name << endl;
-                            } else {
-                                cout << "Not watching tram: " << name << endl;
+                                cout << "unregistered from tram "  << endl;
                             }
                         }
                         catch (const exception& ex) {
-                            cout << "Error unregistering from tram: " << ex.what() << endl;
+                            cout << "error unregistering  " << endl;
                         }
                     } else {
-                        cout << "Usage: unwatch tram <stock_number>" << endl;
+                        cout << "provide tram number!" << endl;
                     }
                 }
-                else if (cmd == "status") {
-                    cout << "\n==== Client Status ====" << endl;
 
-                    // Registered stops
-                    cout << "Registered stops (" << registeredStops.size() << "):" << endl;
-                    if (registeredStops.empty()) {
-                        cout << "  Not registered at any stops." << endl;
-                    } else {
-                        for (const auto& stop : registeredStops) {
-                            cout << "  - " << stop.first << endl;
-                        }
-                    }
-
-                    // Watched trams
-                    cout << "Watched trams (" << watchedTrams.size() << "):" << endl;
-                    if (watchedTrams.empty()) {
-                        cout << "  Not watching any trams." << endl;
-                    } else {
-                        for (const auto& tram : watchedTrams) {
-                            cout << "  - Tram " << tram.first;
-
-                            // Add last update time if available
-                            auto it = lastUpdatedTime.find(tram.first);
-                            if (it != lastUpdatedTime.end()) {
-                                cout << " (Last update: " << it->second.hour << ":"
-                                     << (it->second.minute < 10 ? "0" : "") << it->second.minute << ")";
-                            }
-
-                            cout << endl;
-                        }
-                    }
-
-                    cout << "======================" << endl;
-                }
                 else {
-                    cout << "Unknown command. Type 'help' for available commands." << endl;
+                    cout << "unknown command." << endl;
                 }
             }
             catch (const exception& ex) {
-                cout << "Error executing command: " << ex.what() << endl;
+                cout << "error  " << endl;
             }
         }
 
-        // Clean shutdown
         if (ic) {
             ic->destroy();
         }

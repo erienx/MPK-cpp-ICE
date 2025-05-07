@@ -154,12 +154,15 @@ class TramStopImpl : public TramStop {
     TramStopPrx selfProxy;
 public:
     TramStopImpl(const string &n) : name(n) {}
+
     void setSelfProxy(const TramStopPrx &proxy) {
         selfProxy = proxy;
     }
+
     virtual string getName(const Ice::Current& = Ice::Current()) override {
         return name;
     }
+
     virtual TramList getNextTrams(int howMany, const Ice::Current& = Ice::Current()) override {
         TramList result;
         int count = 0;
@@ -171,27 +174,67 @@ public:
         }
         return result;
     }
+
     virtual void RegisterPassenger(const PassengerPrx &p, const Ice::Current& = Ice::Current()) override {
         passengers.insert(p);
         cout << "passenger registered at stop " << name << endl;
+
+        if (!upcomingTrams.empty() && selfProxy) {
+            try {
+                p->updateStopInfo(selfProxy, upcomingTrams);
+            } catch (const exception &ex) {
+                cerr << "error sending info: " << endl;
+            }
+        }
     }
+
     virtual void UnregisterPassenger(const PassengerPrx &p, const Ice::Current& = Ice::Current()) override {
         passengers.erase(p);
         cout << "passenger unregistered at stop " << name << endl;
     }
+
     virtual void UpdateTramInfo(const TramPrx &tram, const Time& time, const Ice::Current& = Ice::Current()) override {
-        TramInfo info;
-        info.time = time;
-        info.tram = tram;
-        upcomingTrams.push_back(info);
-        cout << "tram info updated at stop " << name << " for tram " << tram->getStockNumber() << ", " <<  time.hour << ":" << time.minute << endl;
-        for (auto &p : passengers) {
-            try {
-                if(selfProxy) {
-                    p->updateStopInfo(selfProxy, upcomingTrams);
-                }
-            } catch (const exception &ex) {
-                cerr << "callback err : " << ex.what() << endl;
+        bool tramFound = false;
+        for (auto &ti : upcomingTrams) {
+            if (ti.tram == tram) {
+                ti.time = time;
+                tramFound = true;
+                break;
+            }
+        }
+
+        if (!tramFound) {
+            TramInfo info;
+            info.time = time;
+            info.tram = tram;
+            upcomingTrams.push_back(info);
+        }
+
+        sort(upcomingTrams.begin(), upcomingTrams.end(),
+             [](const TramInfo &a, const TramInfo &b) {
+                 if (a.time.hour != b.time.hour)
+                     return a.time.hour < b.time.hour;
+                 return a.time.minute < b.time.minute;
+             });
+
+        Time currentTime;
+        auto now = chrono::system_clock::now();
+        time_t currentTimeT = chrono::system_clock::to_time_t(now);
+        tm* timeinfo = localtime(&currentTimeT);
+        currentTime.hour = timeinfo->tm_hour;
+        currentTime.minute = timeinfo->tm_min;
+
+        upcomingTrams.erase(
+                remove_if(upcomingTrams.begin(), upcomingTrams.end(),
+                          [&currentTime](const TramInfo &ti) {
+                              return (ti.time.hour < currentTime.hour) ||
+                                     (ti.time.hour == currentTime.hour && ti.time.minute < currentTime.minute);
+                          }),
+                upcomingTrams.end());
+
+        for (const auto &p : passengers) {
+            if (selfProxy) {
+                p->updateStopInfo(selfProxy, upcomingTrams);
             }
         }
     }
@@ -228,19 +271,39 @@ public:
         return static_cast<double>(lines.size());
     }
 };
-void printHelp(){
-    cout << "\n==== MPK Information System ====" << endl;
-    cout << "Available commands:" << endl;
-    cout << "  info         - Show general system information" << endl;
-    cout << "  lines        - List all lines" << endl;
-    cout << "  line <name>  - Show details about specific line" << endl;
-    cout << "  stops        - List all tram stops" << endl;
-    cout << "  stop <name>  - Show information about specific stop" << endl;
-    cout << "  depos        - List all depos" << endl;
-    cout << "  help         - Show this help message" << endl;
-    cout << "  exit         - Exit the program" << endl;
-    cout << "=============================" << endl;
-}
+
+//class StopFactoryImpl : public StopFactory {
+//    Ice::ObjectAdapterPtr adapter;
+//    map<string, TramStopPrx> stops;
+//    mutable std::mutex mtx;
+//
+//public:
+//    StopFactoryImpl(const Ice::ObjectAdapterPtr& adapter) : adapter(adapter) {}
+//
+//    virtual TramStopPrx createStop(const string& name, const Ice::Current&) override {
+//        std::lock_guard<std::mutex> lock(mtx);
+//        if (stops.find(name) != stops.end()) {
+//            return stops[name];
+//        }
+//
+//        Ice::ObjectPtr stopImpl = new TramStopImpl(name);
+//        Ice::Identity id = Ice::stringToIdentity(name);
+//        adapter->add(stopImpl, id);
+//        TramStopPrx stopProxy = TramStopPrx::uncheckedCast(adapter->createProxy(id));
+//
+//        dynamic_cast<TramStopImpl*>(stopImpl.get())->setSelfProxy(stopProxy);
+//
+//        stops[name] = stopProxy;
+//        cout << "created new tram stop: " << name << endl;
+//        return stopProxy;
+//    }
+//
+//    virtual double getLoad(const Ice::Current&) override {
+//        std::lock_guard<std::mutex> lock(mtx);
+//        return static_cast<double>(stops.size());
+//    }
+//};
+
 int main(int argc, char* argv[]) {
     int status = 0;
     Ice::CommunicatorPtr ic;
@@ -270,6 +333,13 @@ int main(int argc, char* argv[]) {
         );
         mpkProxy->registerLineFactory(lineFactoryProxy);
 
+//        Ice::ObjectPtr stopFactory = new StopFactoryImpl(stopAdapter);
+//        factoryAdapter->add(stopFactory, Ice::stringToIdentity("StopFactory"));
+        StopFactoryPrx stopFactoryProxy = StopFactoryPrx::uncheckedCast(
+            factoryAdapter->createProxy(Ice::stringToIdentity("StopFactory"))
+        );
+        mpkProxy->registerStopFactory(stopFactoryProxy);
+
         Ice::ObjectPtr stopA = new TramStopImpl("StopA");
         Ice::ObjectPtr stopB = new TramStopImpl("StopB");
         Ice::ObjectPtr stopC = new TramStopImpl("StopC");
@@ -281,7 +351,6 @@ int main(int argc, char* argv[]) {
         TramStopPrx stopBProxy = TramStopPrx::uncheckedCast(stopAdapter->createProxy(Ice::stringToIdentity("StopB")));
         TramStopPrx stopCProxy = TramStopPrx::uncheckedCast(stopAdapter->createProxy(Ice::stringToIdentity("StopC")));
 
-        // Fix missing setSelfProxy calls
         dynamic_cast<TramStopImpl*>(stopA.get())->setSelfProxy(stopAProxy);
         dynamic_cast<TramStopImpl*>(stopB.get())->setSelfProxy(stopBProxy);
         dynamic_cast<TramStopImpl*>(stopC.get())->setSelfProxy(stopCProxy);
@@ -304,7 +373,6 @@ int main(int argc, char* argv[]) {
         stopList.push_back(StopInfo{Time{0, 20}, stopCProxy});
         line1Proxy->setStops(stopList);
 
-        // Create a second line for demonstration
         LinePrx line2Proxy = lineFactoryProxy->createLine("Line2");
         mpkImpl->addLine(line2Proxy);
 
@@ -313,71 +381,52 @@ int main(int argc, char* argv[]) {
         stopList2.push_back(StopInfo{Time{0, 15}, stopBProxy});
         line2Proxy->setStops(stopList2);
 
-        cout << "System initialized" << endl;
+        cout << "running...\n" << endl;
 
-        // Interactive console loop
         bool running = true;
         string command;
 
-        printHelp();
+        cout << "commands:" << endl;
+        cout << "lines        - list lines" << endl;
+        cout << "line <name>  - details about a line" << endl;
+        cout << "stop <name>  - details about a stop" << endl;
+        cout << "depos        - list deops" << endl;
+        cout << "exit         - exit" << endl;
 
         while (running) {
             cout << "\nEnter command: ";
             getline(cin, command);
 
-            // Parse command
             istringstream iss(command);
             string cmd;
             iss >> cmd;
 
             if (cmd == "exit") {
                 running = false;
-                cout << "Shutting down..." << endl;
-            }
-            else if (cmd == "help") {
-                printHelp();
-            }
-            else if (cmd == "info") {
-                cout << "\n==== MPK System Information ====" << endl;
-
-                // Count lines
-                LineList lines = mpkProxy->getLines();
-                cout << "Total lines: " << lines.size() << endl;
-
-                // Count stops (this is from our local knowledge)
-                cout << "Total stops: " << 3 << endl;
-
-                // Count depos
-                DepoList depos = mpkProxy->getDepos();
-                cout << "Total depos: " << depos.size() << endl;
-
-                cout << "=============================" << endl;
+                cout << "closing..." << endl;
             }
             else if (cmd == "lines") {
                 LineList lines = mpkProxy->getLines();
-                cout << "\n==== Available Lines ====" << endl;
+                cout << "\nLines:" << endl;
 
                 if (lines.empty()) {
-                    cout << "No lines available." << endl;
+                    cout << "no lines" << endl;
                 }
                 else {
                     for (const auto& line : lines) {
-                        cout << "Line: " << line->getName() << endl;
+                        cout << "line: " << line->getName() << endl;
                     }
                 }
-
-                cout << "========================" << endl;
             }
             else if (cmd == "line") {
                 string lineName;
                 iss >> lineName;
 
                 if (lineName.empty()) {
-                    cout << "Please specify a line name." << endl;
+                    cout << "no line name provided. skip.." << endl;
                     continue;
                 }
 
-                // Find the line
                 LineList lines = mpkProxy->getLines();
                 LinePrx foundLine;
                 bool found = false;
@@ -389,100 +438,68 @@ int main(int argc, char* argv[]) {
                         break;
                     }
                 }
-
                 if (!found) {
-                    cout << "Line '" << lineName << "' not found." << endl;
+                    cout << "line not found" << endl;
                     continue;
                 }
 
-                cout << "\n==== Line " << foundLine->getName() << " Information ====" << endl;
-
-                // Get stops for this line
                 StopList stops = foundLine->getStops();
-                cout << "Stops (" << stops.size() << "):" << endl;
                 for (const auto& stop : stops) {
-                    cout << "  - " << stop.stop->getName();
-                    cout << " (Arrival time: " << stop.time.hour << ":"
-                         << (stop.time.minute < 10 ? "0" : "") << stop.time.minute << ")" << endl;
+                    cout << "- " << stop.stop->getName() <<" (Arrival time: " << stop.time.hour << ":" << stop.time.minute << ")" << endl;
                 }
 
-                // Get trams for this line
+                cout << "\ntrams" << endl;
                 TramList trams = foundLine->getTrams();
-                cout << "Trams (" << trams.size() << "):" << endl;
                 if (trams.empty()) {
-                    cout << "  No trams currently on this line." << endl;
+                    cout << "no trams on this line" << endl;
                 }
                 else {
                     for (const auto& tram : trams) {
-                        cout << "  - Stock Number: " << tram.tram->getStockNumber() << endl;
+                        cout << "- tram number: " << tram.tram->getStockNumber() << endl;
                     }
                 }
-
-                cout << "=============================" << endl;
-            }
-            else if (cmd == "stops") {
-                cout << "\n==== Available Tram Stops ====" << endl;
-                cout << "StopA" << endl;
-                cout << "StopB" << endl;
-                cout << "StopC" << endl;
-                cout << "=============================" << endl;
             }
             else if (cmd == "stop") {
                 string stopName;
                 iss >> stopName;
 
                 if (stopName.empty()) {
-                    cout << "Please specify a stop name." << endl;
+                    cout << "no stop name provided.. skip" << endl;
                     continue;
                 }
 
                 try {
-                    // Try to get the stop
                     TramStopPrx stop = mpkProxy->getTramStop(stopName);
-
-                    cout << "\n==== Tram Stop " << stop->getName() << " Information ====" << endl;
-
-                    // Get next trams
                     TramList nextTrams = stop->getNextTrams(5);
-                    cout << "Next trams (" << nextTrams.size() << "):" << endl;
-
                     if (nextTrams.empty()) {
-                        cout << "  No upcoming trams." << endl;
+                        cout << "no upcoming trams" << endl;
                     }
                     else {
                         for (const auto& tram : nextTrams) {
-                            cout << "  - Tram " << tram.tram->getStockNumber();
-                            cout << " (Arrival: " << tram.time.hour << ":"
-                                 << (tram.time.minute < 10 ? "0" : "") << tram.time.minute << ")" << endl;
+                            cout << "- tram " << tram.tram->getStockNumber() << " (Arrival: "
+                                 << tram.time.hour << ":" << tram.time.minute<< ")" << endl;
                         }
                     }
-
-                    cout << "=============================" << endl;
-                }
-                catch (const exception& ex) {
-                    cout << "Error: " << ex.what() << endl;
+                } catch (const std::exception& ex) {
+                    cout << "error getting stop info: " << endl;
                 }
             }
             else if (cmd == "depos") {
                 DepoList depos = mpkProxy->getDepos();
-                cout << "\n==== Available Depos ====" << endl;
 
                 if (depos.empty()) {
-                    cout << "No depos available." << endl;
+                    cout << "no depos available" << endl;
                 }
                 else {
                     for (const auto& depo : depos) {
-                        cout << "Depo: " << depo.name << endl;
+                        cout << "depo: " << depo.name << endl;
                     }
                 }
-
-                cout << "=========================" << endl;
             }
             else {
-                cout << "Unknown command. Type 'help' for available commands." << endl;
+                cout << "unknown command" << endl;
             }
         }
-
         if (ic) ic->destroy();
     } catch (const Ice::Exception& ex) {
         cerr << ex << endl;

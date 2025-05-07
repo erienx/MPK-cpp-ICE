@@ -3,213 +3,180 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
-#include <thread>
 #include <map>
-#include <mutex>
-#include <condition_variable>
 
 using namespace std;
 using namespace SIP;
-
-// Flag for stop movement simulation
-bool autoMode = false;
-bool running = true;
-mutex mtx;
-condition_variable cv;
 
 class TramImpl : public Tram {
     string stockNumber;
     TramStopPrx currentStop;
     LinePrx line;
     vector<PassengerPrx> passengers;
-    int currentStopIndex = -1; // No stop initially
+    int currentStopIndex = -1;
 
 public:
-    TramImpl(const string& sn) : stockNumber(sn) {}
+    TramImpl(const string &sn) : stockNumber(sn) {}
 
-    virtual TramStopPrx getLocation(const Ice::Current& = Ice::Current()) override {
+    virtual TramStopPrx getLocation(const Ice::Current & = Ice::Current()) override {
         return currentStop;
     }
 
-    virtual LinePrx getLine(const Ice::Current& = Ice::Current()) override {
+    virtual LinePrx getLine(const Ice::Current & = Ice::Current()) override {
         return line;
     }
 
-    virtual void setLine(const LinePrx& l, const Ice::Current& = Ice::Current()) override {
+    virtual void setLine(const LinePrx &l, const Ice::Current & = Ice::Current()) override {
         line = l;
-        currentStopIndex = -1; // Reset position when line changes
+        currentStopIndex = -1;
     }
 
-    virtual StopList getNextStops(int howMany, const Ice::Current& = Ice::Current()) override {
-        if (!line)
-            return {};
+    virtual StopList getNextStops(int howMany, const Ice::Current & = Ice::Current()) override {
+        StopList result;
+
+        if (!line || currentStopIndex < 0)
+            return result;
 
         StopList allStops = line->getStops();
         if (allStops.empty() || currentStopIndex >= static_cast<int>(allStops.size()))
-            return {};
+            return result;
 
-        StopList out;
-        int startIndex = (currentStopIndex < 0) ? 0 : currentStopIndex + 1;
+        auto baseTime = std::chrono::system_clock::now();
 
-        for (int i = startIndex; i < allStops.size() && (i - startIndex) < howMany; i++) {
-            out.push_back(allStops[i]);
+        for (int i = currentStopIndex + 1; i < allStops.size() && result.size() < howMany; ++i) {
+            int minutesToAdd = (i - currentStopIndex +1) * 5;
+            auto futureTime = baseTime + std::chrono::minutes(minutesToAdd);
+            std::time_t futureTimeT = std::chrono::system_clock::to_time_t(futureTime);
+            std::tm *timeinfo = std::localtime(&futureTimeT);
+
+            Time estimatedTime;
+            estimatedTime.hour = timeinfo->tm_hour;
+            estimatedTime.minute = timeinfo->tm_min;
+
+            StopInfo stopWithTime = allStops[i];
+            stopWithTime.time = estimatedTime;
+
+            result.push_back(stopWithTime);
         }
-        return out;
+
+        return result;
     }
 
-    virtual void RegisterPassenger(const PassengerPrx& p, const Ice::Current& = Ice::Current()) override {
+
+    virtual void RegisterPassenger(const PassengerPrx &p, const Ice::Current & = Ice::Current()) override {
         passengers.push_back(p);
-        cout << "Passenger registered on tram " << stockNumber << endl;
+        cout << "passenger registered on tram " << endl;
     }
 
-    virtual void UnregisterPassenger(const PassengerPrx& p, const Ice::Current& = Ice::Current()) override {
+    virtual void UnregisterPassenger(const PassengerPrx &p, const Ice::Current & = Ice::Current()) override {
         auto it = remove(passengers.begin(), passengers.end(), p);
         if (it != passengers.end()) {
             passengers.erase(it, passengers.end());
-            cout << "Passenger unregistered from tram " << stockNumber << endl;
+            cout << "passenger unregistered from tram " << endl;
         }
     }
 
-    virtual string getStockNumber(const Ice::Current& = Ice::Current()) override {
+    virtual string getStockNumber(const Ice::Current & = Ice::Current()) override {
         return stockNumber;
     }
 
-    // Non-Ice methods for tram movement logic
-    // Store the tram proxy for use in updates
     TramPrx selfProxy;
 
-    void setSelfProxy(const TramPrx& proxy) {
+    void setSelfProxy(const TramPrx &proxy) {
         selfProxy = proxy;
     }
 
     bool moveToNextStop() {
-        if (!line)
+        if (!line || !selfProxy) {
+            cerr << "cant move no line or proxy" << endl;
             return false;
+        }
 
         StopList stops = line->getStops();
-        if (stops.empty())
+        if (stops.empty() || currentStopIndex + 1 >= static_cast<int>(stops.size())) {
+            cout << "end reached" << endl;
             return false;
+        }
 
         currentStopIndex++;
-        if (currentStopIndex >= stops.size()) {
-            cout << "End of line reached. Run completed." << endl;
-            return false;
-        }
-
         currentStop = stops[currentStopIndex].stop;
 
-        // Update the list of upcoming stops for the current tram position
-        StopList upcomingStops;
-        int numStops = 3; // You can modify how many stops you want to show
-        int endIndex = min(currentStopIndex + numStops, static_cast<int>(stops.size()));
+        Time arrivalTime = getCurrentTime();
+        cout << "Arrived at stop: " << currentStop->getName()
+             << " at " << arrivalTime.hour << ":" << arrivalTime.minute << endl;
 
-        for (int i = currentStopIndex + 1; i < endIndex; ++i) {
-            upcomingStops.push_back(stops[i]);
-        }
-
-        // Notify passengers about the new stop
-        Time currentTime;
-        auto now = chrono::system_clock::now();
-        time_t currentTimeT = chrono::system_clock::to_time_t(now);
-        tm* timeinfo = localtime(&currentTimeT);
-
-        currentTime.hour = timeinfo->tm_hour;
-        currentTime.minute = timeinfo->tm_min;
-
-        // Notify each passenger with the updated list of upcoming stops
-        for (auto& passenger : passengers) {
-            try {
-                // Send the updated upcoming stops and the tram info to each passenger
-                passenger->updateTramInfo(selfProxy, upcomingStops);
-                cout << "Notifying passenger about arrival at " << currentStop->getName() << endl;
-            } catch (const exception& ex) {
-                cerr << "Error notifying passenger: " << ex.what() << endl;
-            }
-        }
-
-        // Update the stop with our arrival information using our proxy
         try {
-            cout << "Arrived at stop: " << currentStop->getName() <<
-                 " at " << currentTime.hour << ":" <<
-                 (currentTime.minute < 10 ? "0" : "") << currentTime.minute << endl;
-
-            // Update the stop with our arrival information using our proxy
-            if (selfProxy) {
-                currentStop->UpdateTramInfo(selfProxy, currentTime);
-                return true;
-            } else {
-                cerr << "Error: Self proxy not set" << endl;
-                return false;
-            }
-        } catch (const exception& ex) {
-            cerr << "Error updating stop information: " << ex.what() << endl;
+            currentStop->UpdateTramInfo(selfProxy, arrivalTime);
+            updateTimeAtStops();
+            notifyPassengers();
+            return true;
+        } catch (const exception &ex) {
+            cerr << "update failed: " << endl;
             return false;
         }
     }
+    Time getCurrentTime() {
+        auto now = chrono::system_clock::now();
+        time_t nowT = chrono::system_clock::to_time_t(now);
+        tm *timeinfo = localtime(&nowT);
+
+        Time t;
+        t.hour = timeinfo->tm_hour;
+        t.minute = timeinfo->tm_min;
+        return t;
+    }
+
+
 
 
     string getCurrentStopName() {
-        if (!currentStop)
-            return "Not at any stop";
+        if (!currentStop) return "not at a stop";
         return currentStop->getName();
     }
 
-    string getNextStopName() {
-        StopList nextStops = getNextStops(1);
-        if (nextStops.empty())
-            return "End of line";
-        return nextStops[0].stop->getName();
+private:
+    void updateTimeAtStops() {
+        if (!line) return;
+
+        StopList allStops = line->getStops();
+        if (currentStopIndex < 0 || currentStopIndex >= static_cast<int>(allStops.size())) return;
+
+        auto baseTime = std::chrono::system_clock::now();
+
+        for (int i = currentStopIndex + 1; i < allStops.size(); ++i) {
+            int minutesToAdd = (i - currentStopIndex) * 5;
+            auto futureTime = baseTime + std::chrono::minutes(minutesToAdd);
+            std::time_t futureTimeT = std::chrono::system_clock::to_time_t(futureTime);
+            std::tm *timeinfo = std::localtime(&futureTimeT);
+
+            Time estimatedTime;
+            estimatedTime.hour = timeinfo->tm_hour;
+            estimatedTime.minute = timeinfo->tm_min;
+
+            try {
+                allStops[i].stop->UpdateTramInfo(selfProxy, estimatedTime);
+            } catch (const std::exception &ex) {
+                std::cerr << "cant update stop " << allStops[i].stop << std::endl;
+            }
+        }
     }
 
-    int getCurrentStopPosition() {
-        return currentStopIndex;
-    }
 
-    bool isAtTerminus() {
-        if (!line)
-            return true;
 
-        StopList stops = line->getStops();
-        return currentStopIndex >= stops.size() - 1;
+    void notifyPassengers() {
+        StopList upcomingStops = getNextStops(3);
+        for (auto &passenger: passengers) {
+            try {
+                passenger->updateTramInfo(selfProxy, upcomingStops);
+            } catch (const exception &ex) {
+                cerr << "failed to update passenger: " << endl;
+            }
+        }
     }
 };
 
-// Function to run in a separate thread for automatic movement
-void autoMoveThread(TramImpl* tram) {
-    while (running) {
-        {
-            unique_lock<mutex> lock(mtx);
-            if (!autoMode) {
-                // Wait until autoMode is true
-                cv.wait(lock, [] { return autoMode || !running; });
-            }
 
-            if (!running) break;
-        }
-
-        if (!tram->moveToNextStop()) {
-            cout << "End of line reached, stopping auto mode" << endl;
-            autoMode = false;
-        }
-
-        // Sleep for 5 seconds between stops
-        this_thread::sleep_for(chrono::seconds(5));
-    }
-}
-
-void printHelp() {
-    cout << "\n==== Tram Control System ====" << endl;
-    cout << "Available commands:" << endl;
-    cout << "  status      - Show current tram status" << endl;
-    cout << "  move        - Move to next stop" << endl;
-    cout << "  auto        - Toggle automatic movement mode" << endl;
-    cout << "  line <name> - Connect to a different line" << endl;
-    cout << "  help        - Show this help message" << endl;
-    cout << "  exit        - Exit the program" << endl;
-    cout << "=============================" << endl;
-}
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
     if (argc < 2) {
         cerr << "Usage: " << argv[0] << " <stock_number>" << endl;
         return 1;
@@ -221,99 +188,90 @@ int main(int argc, char* argv[]) {
     try {
         tramNumber = stoi(stockNumber);
         if (tramNumber >= 1000 || tramNumber < 0) {
-            cerr << "Invalid tram number (must be between 0 and 999)" << endl;
+            cerr << "invalid tram number (must be between 0 and 999)" << endl;
             return 2;
         }
-    } catch (const exception& ex) {
-        cerr << "Invalid tram number: " << ex.what() << endl;
+    } catch (const exception &ex) {
+        cerr << "invalid tram number: " << ex.what() << endl;
         return 2;
     }
 
     int status = 0;
     Ice::CommunicatorPtr ic;
+    bool running = true;
 
     try {
         ic = Ice::initialize(argc, argv);
 
-        // Configure port for this tram (unique based on stock number)
         stringstream endpoint;
         int port = 9000 + tramNumber;
         endpoint << "default -p " << port;
 
         Ice::ObjectAdapterPtr adapter = ic->createObjectAdapterWithEndpoints("TramAdapter", endpoint.str());
 
-        TramImpl* tramImpl = new TramImpl(stockNumber);
+        TramImpl *tramImpl = new TramImpl(stockNumber);
         Ice::ObjectPtr tramObj = tramImpl;
 
         string tramIdentity = "Tram" + stockNumber;
         adapter->add(tramObj, Ice::stringToIdentity(tramIdentity));
         adapter->activate();
 
-        cout << "Tram with stock number " << stockNumber << " started on port " << port << endl;
+        cout << "tram " << stockNumber << " running on port started on port " << port << endl;
 
-        // Get tram proxy
-        TramPrx tramProxy = TramPrx::uncheckedCast(
-                adapter->createProxy(Ice::stringToIdentity(tramIdentity))
-        );
+        TramPrx tramProxy = TramPrx::uncheckedCast(adapter->createProxy(Ice::stringToIdentity(tramIdentity)));
 
-        // Set self proxy for use in updates
         tramImpl->setSelfProxy(tramProxy);
 
-        // Connect to MPK
         MPKPrx mpkProxy;
         try {
             mpkProxy = MPKPrx::uncheckedCast(ic->stringToProxy("MPK:default -p 10000"));
-            cout << "Connected to MPK system" << endl;
-        } catch (const exception& ex) {
-            cerr << "Failed to connect to MPK system: " << ex.what() << endl;
+            cout << "connected to mpk" << endl;
+        } catch (const exception &ex) {
+            cerr << "cant connect to mpk " << endl;
             return 3;
         }
 
-        // Get available lines
         LineList lines;
         try {
             lines = mpkProxy->getLines();
             if (lines.empty()) {
-                cerr << "No lines available in the system" << endl;
+                cerr << "no lines available " << endl;
                 return 4;
             }
 
-            // Connect to first line by default
             LinePrx lineProxy = lines[0];
             tramImpl->setLine(lineProxy);
 
             try {
                 lineProxy->registerTram(tramProxy);
-                cout << "Registered on line: " << lineProxy->getName() << endl;
-            } catch (const exception& ex) {
-                cerr << "Failed to register on line: " << ex.what() << endl;
+                cout << "registered on line: " << lineProxy->getName() << endl;
+            } catch (const exception &ex) {
+                cerr << "cant register on line: " << endl;
             }
-        } catch (const exception& ex) {
-            cerr << "Failed to get lines: " << ex.what() << endl;
+        } catch (const exception &ex) {
+            cerr << "cant get lines " << endl;
             return 5;
         }
 
-        // Connect to depo
         try {
             DepoList depos = mpkProxy->getDepos();
             if (!depos.empty()) {
                 DepoPrx depoProxy = depos[0].stop;
                 depoProxy->TramOnline(tramProxy);
-                cout << "Tram registered at depo: " << depos[0].name << endl;
+                cout << "registered tram at: " << depos[0].name << endl;
             }
-        } catch (const exception& ex) {
-            cerr << "Failed to register at depo: " << ex.what() << endl;
+        } catch (const exception &ex) {
+            cerr << "cant register at depo 0" << endl;
         }
 
-        // Start automatic movement thread
-        thread autoThread(autoMoveThread, tramImpl);
-
-        // Command loop
-        printHelp();
+        cout << "commands:" << endl;
+        cout << "  move        - move to next stop" << endl;
+        cout << "  line <name> - connect to a different line" << endl;
+        cout << "  exit        - exit" << endl;
         string command;
 
         while (running) {
-            cout << "\nEnter command: ";
+            cout << "\nenter command: ";
             getline(cin, command);
 
             istringstream iss(command);
@@ -322,80 +280,21 @@ int main(int argc, char* argv[]) {
 
             if (cmd == "exit") {
                 running = false;
-                cv.notify_all();  // Notify auto thread to check the running flag
-                cout << "Shutting down tram..." << endl;
-            }
-            else if (cmd == "help") {
-                printHelp();
-            }
-            else if (cmd == "status") {
-                cout << "\n==== Tram Status ====" << endl;
-                cout << "Stock Number: " << tramImpl->getStockNumber() << endl;
-
-                LinePrx line = tramImpl->getLine();
-                if (line) {
-                    cout << "Line: " << line->getName() << endl;
-
-                    int stopPosition = tramImpl->getCurrentStopPosition();
-                    if (stopPosition >= 0) {
-                        cout << "Current Stop: " << tramImpl->getCurrentStopName() << endl;
-
-                        if (!tramImpl->isAtTerminus()) {
-                            cout << "Next Stop: " << tramImpl->getNextStopName() << endl;
-                        } else {
-                            cout << "Position: Terminus (End of Line)" << endl;
-                        }
-                    } else {
-                        cout << "Position: Not on route yet" << endl;
-                        if (!tramImpl->getNextStops(1).empty()) {
-                            cout << "Next Stop: " << tramImpl->getNextStopName() << endl;
-                        }
-                    }
-
-                    cout << "Auto mode: " << (autoMode ? "Enabled" : "Disabled") << endl;
-                } else {
-                    cout << "Not assigned to any line" << endl;
-                }
-
-                cout << "====================" << endl;
-            }
-            else if (cmd == "move") {
-                if (autoMode) {
-                    cout << "Cannot move manually while in auto mode. Please disable auto mode first." << endl;
-                    continue;
-                }
-
+                cout << "closing..." << endl;
+            } else if (cmd == "move") {
                 if (tramImpl->moveToNextStop()) {
-                    cout << "Moved to stop: " << tramImpl->getCurrentStopName() << endl;
+                    cout << "moved to stop: " << tramImpl->getCurrentStopName() << endl;
                 } else {
-                    cout << "Failed to move. End of line reached or no line assigned." << endl;
+                    cout << "cant move, maybe reached end of line" << endl;
                 }
-            }
-            else if (cmd == "auto") {
-                autoMode = !autoMode;
-                cout << "Auto mode " << (autoMode ? "enabled" : "disabled") << endl;
-                if (autoMode) {
-                    cv.notify_one();  // Notify the auto thread to start moving
-                }
-            }
-            else if (cmd == "line") {
+            } else if (cmd == "line") {
                 string lineName;
                 iss >> lineName;
 
-                if (lineName.empty()) {
-                    cout << "Available lines:" << endl;
-                    for (const auto& line : lines) {
-                        cout << "  - " << line->getName() << endl;
-                    }
-                    cout << "Usage: line <name>" << endl;
-                    continue;
-                }
-
-                // Find the requested line
                 LinePrx newLine;
                 bool found = false;
 
-                for (const auto& line : lines) {
+                for (const auto &line: lines) {
                     if (line->getName() == lineName) {
                         newLine = line;
                         found = true;
@@ -404,57 +303,46 @@ int main(int argc, char* argv[]) {
                 }
 
                 if (!found) {
-                    cout << "Line '" << lineName << "' not found" << endl;
+                    cout << "line not found" << endl;
                     continue;
                 }
 
-                // Unregister from current line if needed
                 LinePrx currentLine = tramImpl->getLine();
                 if (currentLine) {
                     try {
                         currentLine->unregisterTram(tramProxy);
-                        cout << "Unregistered from line: " << currentLine->getName() << endl;
-                    } catch (const exception& ex) {
-                        cerr << "Failed to unregister from current line: " << ex.what() << endl;
+                        cout << "unregistered from current line: " << endl;
+                    } catch (const exception &ex) {
+                        cerr << "unregister from line fail " << endl;
                     }
                 }
 
-                // Register on new line
                 try {
                     tramImpl->setLine(newLine);
                     newLine->registerTram(tramProxy);
-                    cout << "Registered on line: " << newLine->getName() << endl;
-                } catch (const exception& ex) {
-                    cerr << "Failed to register on new line: " << ex.what() << endl;
+                    cout << "registered on line: " << newLine->getName() << endl;
+                } catch (const exception &ex) {
+                    cerr << "register to line fail " << endl;
                 }
-            }
-            else {
-                cout << "Unknown command. Type 'help' for available commands." << endl;
+            } else {
+                cout << "unknown command" << endl;
             }
         }
 
-        // Cleanup before shutting down
         LinePrx line = tramImpl->getLine();
         if (line) {
             try {
                 line->unregisterTram(tramProxy);
-                cout << "Unregistered from line" << endl;
+                cout << "unregistered from line" << endl;
             } catch (...) {
-                // Ignore exceptions during shutdown
             }
         }
 
-        // Wait for auto thread to finish
-        if (autoThread.joinable()) {
-            autoThread.join();
-        }
-
-        // Clean shutdown
         if (ic) {
             ic->destroy();
         }
 
-    } catch (const exception& ex) {
+    } catch (const exception &ex) {
         cerr << "Error: " << ex.what() << endl;
         status = 1;
     }
