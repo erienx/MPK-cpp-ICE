@@ -180,13 +180,13 @@ public:
         cout << "passenger registered at stop " << name << endl;
 
         if (!upcomingTrams.empty() && selfProxy) {
-            try {
-                p->updateStopInfo(selfProxy, upcomingTrams);
-            } catch (const exception &ex) {
-                cerr << "error sending info: " << endl;
-            }
+            TramStopPrx stopProxy = selfProxy;
+            TramList tramsCopy = upcomingTrams;
+
+            Ice::AsyncResultPtr result = p->begin_updateStopInfo(stopProxy, tramsCopy);
         }
     }
+
 
     virtual void UnregisterPassenger(const PassengerPrx &p, const Ice::Current& = Ice::Current()) override {
         passengers.erase(p);
@@ -234,9 +234,15 @@ public:
 
         for (const auto &p : passengers) {
             if (selfProxy) {
-                p->updateStopInfo(selfProxy, upcomingTrams);
+                TramStopPrx stopProxy = selfProxy;
+                TramList tramsCopy = upcomingTrams;
+
+                Ice::AsyncResultPtr result = p->begin_updateStopInfo(stopProxy, tramsCopy);
+            } else {
+                cerr << "Cannot notify passengers: selfProxy not set for stop " << name << endl;
             }
         }
+
     }
 };
 
@@ -272,37 +278,33 @@ public:
     }
 };
 
-//class StopFactoryImpl : public StopFactory {
-//    Ice::ObjectAdapterPtr adapter;
-//    map<string, TramStopPrx> stops;
-//    mutable std::mutex mtx;
-//
-//public:
-//    StopFactoryImpl(const Ice::ObjectAdapterPtr& adapter) : adapter(adapter) {}
-//
-//    virtual TramStopPrx createStop(const string& name, const Ice::Current&) override {
-//        std::lock_guard<std::mutex> lock(mtx);
-//        if (stops.find(name) != stops.end()) {
-//            return stops[name];
-//        }
-//
-//        Ice::ObjectPtr stopImpl = new TramStopImpl(name);
-//        Ice::Identity id = Ice::stringToIdentity(name);
-//        adapter->add(stopImpl, id);
-//        TramStopPrx stopProxy = TramStopPrx::uncheckedCast(adapter->createProxy(id));
-//
-//        dynamic_cast<TramStopImpl*>(stopImpl.get())->setSelfProxy(stopProxy);
-//
-//        stops[name] = stopProxy;
-//        cout << "created new tram stop: " << name << endl;
-//        return stopProxy;
-//    }
-//
-//    virtual double getLoad(const Ice::Current&) override {
-//        std::lock_guard<std::mutex> lock(mtx);
-//        return static_cast<double>(stops.size());
-//    }
-//};
+class StopFactoryImpl : public StopFactory {
+    Ice::ObjectAdapterPtr adapter;
+    map<string, TramStopPrx> stops;
+    mutable std::mutex mtx;
+
+public:
+    StopFactoryImpl(const Ice::ObjectAdapterPtr& adapter) : adapter(adapter) {}
+
+    virtual TramStopPrx createStop(const string& name, const Ice::Current&) override {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (stops.find(name) != stops.end()) {
+            return stops[name];
+        }
+
+        Ice::ObjectPtr stopImpl = new TramStopImpl(name);
+        Ice::Identity id = Ice::stringToIdentity(name);
+        adapter->add(stopImpl, id);
+        TramStopPrx stopProxy = TramStopPrx::uncheckedCast(adapter->createProxy(id));
+        stops[name] = stopProxy;
+        return stopProxy;
+    }
+
+    virtual double getLoad(const Ice::Current&) override {
+        std::lock_guard<std::mutex> lock(mtx);
+        return static_cast<double>(stops.size());
+    }
+};
 
 int main(int argc, char* argv[]) {
     int status = 0;
@@ -333,10 +335,10 @@ int main(int argc, char* argv[]) {
         );
         mpkProxy->registerLineFactory(lineFactoryProxy);
 
-//        Ice::ObjectPtr stopFactory = new StopFactoryImpl(stopAdapter);
-//        factoryAdapter->add(stopFactory, Ice::stringToIdentity("StopFactory"));
+        Ice::ObjectPtr stopFactory = new StopFactoryImpl(stopAdapter);
+        factoryAdapter->add(stopFactory, Ice::stringToIdentity("StopFactory"));
         StopFactoryPrx stopFactoryProxy = StopFactoryPrx::uncheckedCast(
-            factoryAdapter->createProxy(Ice::stringToIdentity("StopFactory"))
+                factoryAdapter->createProxy(Ice::stringToIdentity("StopFactory"))
         );
         mpkProxy->registerStopFactory(stopFactoryProxy);
 
@@ -379,6 +381,8 @@ int main(int argc, char* argv[]) {
         StopList stopList2;
         stopList2.push_back(StopInfo{Time{0, 0}, stopCProxy});
         stopList2.push_back(StopInfo{Time{0, 15}, stopBProxy});
+        stopList2.push_back(StopInfo{Time{0, 30}, stopAProxy});
+
         line2Proxy->setStops(stopList2);
 
         cout << "running...\n" << endl;

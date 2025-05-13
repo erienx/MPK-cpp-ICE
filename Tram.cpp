@@ -165,11 +165,16 @@ private:
 
     void notifyPassengers() {
         StopList upcomingStops = getNextStops(3);
-        for (auto &passenger: passengers) {
+        vector<PassengerPrx> passengersCopy;
+        {
+            passengersCopy = passengers;
+        }
+
+        for (auto &passenger: passengersCopy) {
             try {
                 passenger->updateTramInfo(selfProxy, upcomingStops);
             } catch (const exception &ex) {
-                cerr << "failed to update passenger: " << endl;
+                cerr << "Failed to update passenger: " << ex.what() << endl;
             }
         }
     }
