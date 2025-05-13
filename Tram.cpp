@@ -258,8 +258,9 @@ int main(int argc, char *argv[]) {
             return 5;
         }
 
+        DepoList depos;
         try {
-            DepoList depos = mpkProxy->getDepos();
+            depos = mpkProxy->getDepos();
             if (!depos.empty()) {
                 DepoPrx depoProxy = depos[0].stop;
                 depoProxy->TramOnline(tramProxy);
@@ -274,6 +275,7 @@ int main(int argc, char *argv[]) {
         cout << "  line <name> - connect to a different line" << endl;
         cout << "  exit        - exit" << endl;
         string command;
+        bool moved = false;
 
         while (running) {
             cout << "\nenter command: ";
@@ -288,6 +290,10 @@ int main(int argc, char *argv[]) {
                 cout << "closing..." << endl;
             } else if (cmd == "move") {
                 if (tramImpl->moveToNextStop()) {
+                    if (!moved) {
+                        depos[0].stop->TramOffline(tramProxy);
+                        moved= true;
+                    }
                     cout << "moved to stop: " << tramImpl->getCurrentStopName() << endl;
                 } else {
                     cout << "cant move, maybe reached end of line" << endl;

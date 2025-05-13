@@ -371,8 +371,8 @@ int main(int argc, char* argv[]) {
 
         StopList stopList;
         stopList.push_back(StopInfo{Time{0, 0}, stopAProxy});
-        stopList.push_back(StopInfo{Time{0, 10}, stopBProxy});
-        stopList.push_back(StopInfo{Time{0, 20}, stopCProxy});
+        stopList.push_back(StopInfo{Time{0, 5}, stopBProxy});
+        stopList.push_back(StopInfo{Time{0, 10}, stopCProxy});
         line1Proxy->setStops(stopList);
 
         LinePrx line2Proxy = lineFactoryProxy->createLine("Line2");
@@ -380,8 +380,8 @@ int main(int argc, char* argv[]) {
 
         StopList stopList2;
         stopList2.push_back(StopInfo{Time{0, 0}, stopCProxy});
-        stopList2.push_back(StopInfo{Time{0, 15}, stopBProxy});
-        stopList2.push_back(StopInfo{Time{0, 30}, stopAProxy});
+        stopList2.push_back(StopInfo{Time{0, 5}, stopBProxy});
+        stopList2.push_back(StopInfo{Time{0, 10}, stopAProxy});
 
         line2Proxy->setStops(stopList2);
 
